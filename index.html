@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Flappy Bird</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+        #score {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 22px;
+            font-family: Arial, sans-serif;
+            color: white;
+            background-color: black;
+            border-radius: 10px;
+            padding: 10px;
+        }
+        #game-over {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 44px;
+            font-family: Arial, sans-serif;
+            color: white;
+            background-color: black;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            display: none;
+        }
+
+        #game-restart-text {
+            position: absolute;
+            top: 55%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 44px;
+            font-family: Arial, sans-serif;
+            color: white;
+            background-color: black;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            display: none;
+        }
+        #main-menu {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 24px;
+            font-family: Arial, sans-serif;
+            color: white;
+            text-align: center;
+            display: none;
+        }
+        #main-menu button {
+            margin: 10px;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 20px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div id="score" style="display: none;">Score: 0</div>
+    <div id="game-over"></div>
+    <div id="game-restart-text"></div>
+    <div id="main-menu">
+        <button id="start-game">Start Game</button>
+        <button id="credits">Credits</button>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script>
+        const scene = new THREE.Scene();
+
+        // Load background image
+        const textureLoader = new THREE.TextureLoader();
+        const backgroundTexture = textureLoader.load('background.jpg');
+        scene.background = backgroundTexture; // Set background to the loaded image
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Create the ground
+        const groundGeometry = new THREE.BoxGeometry(50, 0.5, 5);
+        const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x808080 });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.position.y = -1;
+        scene.add(ground);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5); 
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        directionalLight.position.set(5, 10, 7.5);
+        directionalLight.castShadow = true;
+        scene.add(directionalLight);
+
+        // Load the bird model (GLTF)
+        const loader = new THREE.GLTFLoader();
+        let bird;
+        loader.load(
+            './models/scene.gltf', // Path to the GLTF file
+            function (gltf) {
+                bird = gltf.scene;
+                bird.traverse((node) => {
+                    if (node.isMesh) {
+                        node.castShadow = true; 
+                        node.material.needsUpdate = true; 
+                    }
+                });
+                bird.scale.set(0.4, 0.4, 0.4); // Make the bird a little smaller
+                bird.position.y = 3; 
+                scene.add(bird);
+            },
+            function (xhr) {
+                console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+            },
+            function (error) {
+                console.error('Error loading model', error);
+            }
+        );
+
+        // Gravity variables
+        let velocity = 0;
+        const gravity = -0.013;
+        const groundY = -0.5;
+
+        // Game state
+        let gameRunning = false;
+        let score = 0;
+        let lastObstacleX = -15; // Initialize to a starting position
+        const scoreElement = document.getElementById('score');
+        const gameOverElement = document.getElementById('game-over');
+        const gameRestartElement = document.getElementById('game-restart-text');
+        const mainMenuElement = document.getElementById('main-menu');
+        mainMenuElement.style.display = 'block'; // Show main menu initially
+
+        // Load sound effects
+        const flapSound = new Audio('./sounds/flap.mp3');
+        const hitSound = new Audio('./sounds/hit.mp3');
+        const fallingSound = new Audio('./sounds/falling.mp3');
+        const scoreSound = new Audio('./sounds/score.mp3');
+
+        // Event listener for jumping
+        window.addEventListener('keydown', (event) => {
+            if (event.code === 'Space' && gameRunning) {
+                velocity = 0.2; // Jump velocity
+                flapSound.play(); // Play flap sound
+            }
+            if (event.code === 'KeyR' && !gameRunning) {
+                restartGame();
+            }
+        });
+
+        // Event listener for menu buttons
+        document.getElementById('start-game').addEventListener('click', () => {
+            startGame();
+        });
+
+        document.getElementById('credits').addEventListener('click', () => {
+            alert('Credits: Developed by Hasan Hüseyin, Shoaib Khalil and Mehmet Ali ');
+        });
+
+        camera.position.z = 7;
+        camera.position.y = 4;
+
+        const obstacles = [];
+        const obstacleSpeed = 0.1;
+        const gapHeight = 3.3;
+
+        function createObstacle() {
+            const baseHeight = Math.random() * 2 + 3;
+            const radius = 0.6;
+
+            const groundObstacleGeometry = new THREE.CylinderGeometry(radius, radius, baseHeight, 64);
+            const groundObstacleMaterial = new THREE.MeshStandardMaterial({
+                color: 0x008000, 
+                roughness: 0.4, 
+                metalness: 0.2, 
+            });
+            const groundObstacle = new THREE.Mesh(groundObstacleGeometry, groundObstacleMaterial);
+            groundObstacle.position.x = bird ? bird.position.x + 15 : 15;
+            groundObstacle.position.y = groundY + baseHeight / 2;
+            groundObstacle.position.z = 0;
+            scene.add(groundObstacle);
+            obstacles.push(groundObstacle);
+
+            const floatingObstacleGeometry = new THREE.CylinderGeometry(radius, radius, baseHeight, 64);
+            const floatingObstacleMaterial = new THREE.MeshStandardMaterial({
+                color: 0x008000,
+                roughness: 0.4,
+                metalness: 0.2,
+            });
+            const floatingObstacle = new THREE.Mesh(floatingObstacleGeometry, floatingObstacleMaterial);
+            floatingObstacle.position.x = bird ? bird.position.x + 15 : 15;
+            floatingObstacle.position.y = groundY + baseHeight + gapHeight + baseHeight / 2;
+            floatingObstacle.position.z = 0;
+            scene.add(floatingObstacle);
+            obstacles.push(floatingObstacle);
+        }
+
+        function updateObstacles() {
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obstacle = obstacles[i];
+                obstacle.position.x -= obstacleSpeed;
+
+                // Improved condition for when the bird crosses the obstacle
+                if (obstacle.position.x < bird.position.x && !obstacle.passed) {
+                    // Mark the obstacle as passed
+                    obstacle.passed = true;
+                    score++;
+                    scoreElement.textContent = `Score: ${score/2}`;
+                    scoreSound.play(); // Play score sound
+                }
+
+                if (obstacle.position.x < (bird ? bird.position.x - 5 : -5)) {
+                    scene.remove(obstacle);
+                    obstacles.splice(i, 1);
+                }
+
+                if (bird) {
+                    const birdBox = new THREE.Box3().setFromObject(bird);
+                    const obstacleBox = new THREE.Box3().setFromObject(obstacle);
+                    if (birdBox.intersectsBox(obstacleBox)) {
+                        obstacle.material.color.set(0xff0000); // Change color on collision
+                        hitSound.play(); // Play hit sound
+                        gameRunning = false; // End game on collision
+                        fallingSound.play(); // Play falling sound after hit
+                        showGameOver();
+                        showRestartText();
+                    }
+                }
+            }
+
+            // Create new obstacles when the last one passes the bird's X position
+            if (obstacles.length === 0 || obstacles[obstacles.length - 1].position.x < (bird ? bird.position.x + 10 : 10)) {
+                createObstacle();
+            }
+        }
+
+        function showGameOver() {
+            gameOverElement.innerHTML = `GAME OVER!<br>Score: ${score/2}`;
+            gameOverElement.style.display = 'block';
+        }
+        function showRestartText() {
+            gameRestartElement.innerHTML = 'Press "r" to restart';
+            gameRestartElement.style.display = 'block';
+        }
+
+        function restartGame() {
+            bird.position.set(0, 2, 0);
+            velocity = 0;
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                scene.remove(obstacles[i]);
+                obstacles.splice(i, 1);
+            }
+
+            score = 0;
+            scoreElement.textContent = `Score: ${score/2}`;
+            gameOverElement.style.display = 'none';
+            gameRestartElement.style.display = 'none';
+
+            gameRunning = true;
+        }
+
+        function startGame() {
+            mainMenuElement.style.display = 'none';
+            scoreElement.style.display = 'block';
+            gameRunning = true;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (gameRunning) {
+                velocity += gravity;
+                bird.position.y += velocity;
+
+                // Check if the bird hits the ground
+                if (bird.position.y <= groundY) {
+                    bird.position.y = groundY;
+                    velocity = 0;
+                    gameRunning = false; // End the game
+                    hitSound.play(); // Play hit sound (can be reused for ground hit)
+                    showGameOver(); // Show the game over screen
+                    showRestartText();
+                }
+
+                updateObstacles();
+                camera.position.x = bird.position.x;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
